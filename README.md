@@ -1,7 +1,9 @@
 🚀 Manfaat Auto Deploy GitHub
 Auto Deploy GitHub adalah sistem yang memungkinkan proses upload, update, dan sinkronisasi source code ke GitHub dilakukan secara otomatis tanpa perlu menggunakan Git secara manual melalui terminal.
+
 ✨ Keunggulan
 ⚡ Upload Instan
+
 Cukup pilih folder project, seluruh file akan otomatis di-commit dan di-push ke repository GitHub.
 
 🔄 Auto Update Repository:
