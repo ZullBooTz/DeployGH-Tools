@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import re
 import logging
 import importlib
 import subprocess
@@ -70,7 +71,7 @@ class TakazGitHubManager:
 | |_| |  __/| |__| |_| / ___ \| |_| | |___|  _ < 
  \___/|_|   |_____\___/_/   \_\____/|_____|_| \_\
 """
-        panel = Panel(Align.center(f"[bold blue]{ascii_art}[/bold blue]\n[bold cyan][ ✦ TAKAZ V4 {title_text} ✦ ][/bold cyan]"), border_style="bold blue")
+        panel = Panel(Align.center(f"[bold blue]{ascii_art}[/bold blue]\n[bold cyan][ ✦ TAKAZ V5 {title_text} ✦ ][/bold cyan]"), border_style="bold blue")
         self.console.print(panel)
         self.console.print("")
 
@@ -166,6 +167,20 @@ class TakazGitHubManager:
         if os.path.exists(".git/rebase-apply"):
             shutil.rmtree(".git/rebase-apply", ignore_errors=True)
 
+    def secure_gitignore(self):
+        """Memastikan github_config.json dan folder cache tidak ikut terupload."""
+        ignore_items = [CONFIG_FILE, ".takaz_cache/", "__pycache__/", "*.pyc"]
+        if not os.path.exists(".gitignore"):
+            with open(".gitignore", "w", encoding="utf-8") as f:
+                f.write("\n".join(ignore_items) + "\n")
+        else:
+            with open(".gitignore", "r", encoding="utf-8") as f:
+                content = f.read()
+            with open(".gitignore", "a", encoding="utf-8") as f:
+                for item in ignore_items:
+                    if item not in content:
+                        f.write(f"\n{item}\n")
+
     def smart_sync_and_push(self, progress, task_sync, task_push, branch_name) -> tuple:
         progress.update(task_sync, description="[cyan]Membersihkan status Git lokal...[/cyan]")
         self.cleanup_git_state()
@@ -183,7 +198,6 @@ class TakazGitHubManager:
             if not ok_rebase:
                 self.cleanup_git_state()
                 
-                # Kasus 1: Beda histori (Unrelated Histories)
                 if "unrelated histories" in rebase_out.lower() or "fatal: refusing to merge" in rebase_out.lower():
                     progress.update(task_sync, description="[yellow]Menyatukan histori lokal & GitHub (Unrelated Histories)...[/yellow]")
                     ok_merge, merge_out = self.run_cmd_capture(f"git merge origin/{branch_name} --allow-unrelated-histories -X ours --no-edit")
@@ -191,19 +205,14 @@ class TakazGitHubManager:
                         self.cleanup_git_state()
                         return False, f"Gagal menyatukan histori:\n{merge_out}"
                         
-                # Kasus 2: Bentrok kode (Merge Conflict) - AUTO RESOLVE
                 elif "conflict" in rebase_out.lower() or "could not apply" in rebase_out.lower():
                     progress.update(task_sync, description="[yellow]Konflik terdeteksi! Memaksa menggunakan versi LOKAL (Auto-Resolve)...[/yellow]")
-                    
-                    # -X theirs pada rebase berarti memprioritaskan branch lokal (yang sedang di-rebase)
                     ok_force, force_out = self.run_cmd_capture(f"git rebase -X theirs origin/{branch_name}")
                     
                     if not ok_force:
                         self.cleanup_git_state()
-                        # Fallback terakhir jika rebase masih gagal: gunakan strategi merge
                         progress.update(task_sync, description="[yellow]Rebase gagal, mencoba Auto-Merge...[/yellow]")
                         ok_merge2, merge_out2 = self.run_cmd_capture(f"git merge origin/{branch_name} -X ours --no-edit")
-                        
                         if not ok_merge2:
                             self.cleanup_git_state()
                             return False, f"Konflik sangat rumit, gagal Auto-Resolve:\n{force_out}\n{merge_out2}"
@@ -211,7 +220,6 @@ class TakazGitHubManager:
                     return False, f"Gagal Sinkronisasi Git:\n{rebase_out}"
 
         progress.update(task_sync, description="[bold green]✔ Sinkronisasi Selesai.[/bold green]")
-
         progress.update(task_push, description=f"[bold cyan]🚀 Memulai Upload ke Branch '{branch_name}'...[/bold cyan]")
         
         push_success = False
@@ -231,7 +239,6 @@ class TakazGitHubManager:
                 self.cleanup_git_state()
                 self.run_cmd_capture("git fetch origin")
                 
-                # Retry dengan proteksi konflik (-X theirs)
                 ok_retry, retry_out = self.run_cmd_capture(f"git rebase -X theirs origin/{branch_name}")
                 if not ok_retry:
                     self.cleanup_git_state()
@@ -249,6 +256,9 @@ class TakazGitHubManager:
         else:
             return False, push_output
 
+    # ============================================================
+    # MENU 1: GITHUB UPLOADER
+    # ============================================================
     def upload_repo(self):
         self.header("GITHUB UPLOADER")
         
@@ -261,6 +271,8 @@ class TakazGitHubManager:
 
         os.chdir(target_dir)
         self.console.print(f"[bold green]✔ Masuk ke folder:[/bold green] {target_dir}")
+        
+        self.secure_gitignore()
         self.run_cmd_capture(f"git config --global --add safe.directory '{target_dir}'")
         
         saved = self.get_saved_credentials()
@@ -356,6 +368,103 @@ class TakazGitHubManager:
             self.console.print("\n[bold red]❌ Upload gagal! Git Error:[/bold red]")
             self.console.print(f"[red]{error_msg}[/red]")
         
+        Prompt.ask("\n[bold white]ENTER[/bold white] untuk kembali")
+
+    # ============================================================
+    # MENU 2: RAW GITHUB RUNNER (FIXED PRIVATE & UNBUFFERED)
+    # ============================================================
+    def run_raw_script(self):
+        self.header("RAW SCRIPT RUNNER")
+        
+        url = Prompt.ask("[bold cyan]🔗 Masukkan Link GitHub Raw (.py)[/bold cyan]").strip()
+        if not url.startswith("http"):
+            self.console.print("[bold red]❌ Error: Harap masukkan URL yang valid![/bold red]")
+            Prompt.ask("\n[bold white]ENTER[/bold white] untuk kembali")
+            return
+
+        CACHE_DIR = ".takaz_cache"
+        if not os.path.exists(CACHE_DIR):
+            os.makedirs(CACHE_DIR)
+            
+        file_name = url.split("/")[-1]
+        if not file_name.endswith(".py"):
+            file_name += ".py"
+            
+        cache_file = os.path.join(CACHE_DIR, file_name)
+
+        # Autentikasi untuk mendownload dari Private Repo
+        headers = {}
+        saved = self.get_saved_credentials()
+        if saved and 'token' in saved:
+            headers['Authorization'] = f"token {saved['token']}"
+
+        with Progress(
+            SpinnerColumn("dots12", style="cyan"), 
+            TextColumn("[cyan]Memuat script dari GitHub Raw..."), 
+            transient=True,
+            console=self.console
+        ) as progress:
+            progress.add_task("download", start=False)
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    f.write(response.text)
+                download_success = True
+            except requests.exceptions.RequestException as e:
+                download_success = False
+                err_msg = str(e)
+        
+        if not download_success:
+            if os.path.exists(cache_file):
+                self.console.print("[bold yellow]⚠ Koneksi/Autentikasi gagal. Menggunakan versi Cache (Offline Mode).[/bold yellow]")
+            else:
+                self.console.print(f"[bold red]❌ Gagal mendownload script: {err_msg}[/bold red]")
+                self.console.print("[italic yellow]* Jika ini Private Repo, pastikan Anda sudah menggunakan 'Menu 1' sebelumnya agar token Anda tersimpan di sistem.[/italic yellow]")
+                Prompt.ask("\n[bold white]ENTER[/bold white] untuk kembali")
+                return
+
+        self.console.print(f"\n[bold green]▶ Menjalankan:[/bold green] [cyan]{file_name}[/cyan]\n" + "═"*45)
+        
+        while True:
+            # Menggunakan flag -u (unbuffered) agar terminal tidak blank/stuck
+            process = subprocess.Popen(
+                [sys.executable, "-u", cache_file],
+                stdout=sys.stdout,
+                stdin=sys.stdin,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            _, stderr_output = process.communicate()
+
+            if process.returncode != 0 and stderr_output:
+                if "ModuleNotFoundError" in stderr_output:
+                    match = re.search(r"No module named '(.+?)'", stderr_output)
+                    if match:
+                        missing_module = match.group(1)
+                        self.console.print(f"\n[bold yellow]⚠ Modul kurang dideteksi:[/bold yellow] [cyan]{missing_module}[/cyan]")
+                        
+                        with Progress(
+                            SpinnerColumn("bouncingBar", style="magenta"), 
+                            TextColumn(f"[magenta]Menjalankan Auto-Install untuk [bold]{missing_module}[/bold]..."), 
+                            transient=True,
+                            console=self.console
+                        ) as progress:
+                            progress.add_task("install", start=False)
+                            try:
+                                subprocess.check_call([sys.executable, "-m", "pip", "install", missing_module, "-q"])
+                                self.console.print(f"[bold green]✓ Modul {missing_module} berhasil diinstal! Me-restart script...[/bold green]\n")
+                                time.sleep(1)
+                                continue
+                            except Exception as e:
+                                self.console.print(f"[bold red]❌ Gagal menginstal {missing_module}: {e}[/bold red]")
+                                break
+                else:
+                    self.console.print(f"\n[bold red]Error pada script target:[/bold red]\n{stderr_output}")
+                    break
+            else:
+                break
+                
         Prompt.ask("\n[bold white]ENTER[/bold white] untuk kembali")
 
     def create_repo(self):
@@ -466,16 +575,19 @@ class TakazGitHubManager:
         while True:
             self.header("GITHUB MANAGER")
             self.console.print("\n[bold cyan][1][/bold cyan] [bold green]Upload / Update Source Code[/bold green]")
-            self.console.print("[bold cyan][2][/bold cyan] [bold yellow]Buat Repository Baru[/bold yellow]")
-            self.console.print("[bold cyan][3][/bold cyan] [bold red]Hapus Repository GitHub[/bold red]")
+            self.console.print("[bold cyan][2][/bold cyan] [bold magenta]Run Raw GitHub Script[/bold magenta]")
+            self.console.print("[bold cyan][3][/bold cyan] [bold yellow]Buat Repository Baru[/bold yellow]")
+            self.console.print("[bold cyan][4][/bold cyan] [bold red]Hapus Repository GitHub[/bold red]")
             self.console.print("\n[bold red][0][/bold red] [bold white]Keluar Program[/bold white]")
             
-            choice = Prompt.ask("\n[bold green]➜ Pilih Opsi[/bold green]", choices=["0", "1", "2", "3"])
+            choice = Prompt.ask("\n[bold green]➜ Pilih Opsi[/bold green]", choices=["0", "1", "2", "3", "4"])
             if choice == "1":
                 self.upload_repo()
             elif choice == "2":
-                self.create_repo()
+                self.run_raw_script()
             elif choice == "3":
+                self.create_repo()
+            elif choice == "4":
                 self.delete_repo()
             elif choice == "0":
                 self.console.print("\n[bold green]Terima kasih telah menggunakan Takaz GitHub Manager![/bold green]")
