@@ -1,4 +1,4 @@
-github_config.json
 .takaz_cache/
 __pycache__/
 *.pyc
+.env
