@@ -12,9 +12,6 @@ Setiap perubahan pada project dapat langsung dikirim ke GitHub dengan satu klik,
 📂 Manajemen Repository:
 Membuat repository baru dan menghapus repository langsung dari aplikasi tanpa perlu membuka website GitHub.
 
-🔑 Login Sekali:
-Username dan Personal Access Token dapat disimpan secara lokal sehingga tidak perlu memasukkannya setiap kali melakukan deploy.
-
 📋 Daftar Repository Otomatis:
 Mengambil seluruh repository dari akun GitHub melalui API sehingga pengguna tinggal memilih repository tujuan.
 
